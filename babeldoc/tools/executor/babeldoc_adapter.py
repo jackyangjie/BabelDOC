@@ -39,11 +39,16 @@ def run_babeldoc_request(request: dict[str, Any], progress_send, cancel_recv) ->
         paths = _required_object(request, "paths")
         raw_input_path = resolve_file(workroot, _required_str(paths, "input_file"))
 
-        if str(raw_input_path).lower().endswith(".docx"):
+        if str(raw_input_path).lower().endswith((".doc", ".docx")):
             # === DOCX pipeline ===
             result = _run_docx_translate(request, emit, task_id=task_id)
             logger.info("DOCX execution finished: task_id=%s", task_id)
             emit("result", _docx_result_to_payload(result))
+        elif str(raw_input_path).lower().endswith((".ppt", ".pptx")):
+            # === PPTX pipeline ===
+            result = _run_pptx_translate(request, emit, task_id=task_id)
+            logger.info("PPTX execution finished: task_id=%s", task_id)
+            emit("result", _pptx_result_to_payload(result))
         else:
             # === PDF pipeline (existing) ===
             config_started_at = time.monotonic()
@@ -414,6 +419,82 @@ def _docx_result_to_payload(result: dict[str, Any]) -> dict[str, Any]:
         rel = relative_to_workroot(workroot, Path(dual))
         if isinstance(rel, str):
             files["dual_docx"] = rel
+    return {
+        "files": files,
+        "metrics": {
+            "time_consume_seconds": _number_or_zero(
+                result.get("total_seconds")
+            ),
+        },
+    }
+
+
+def _run_pptx_translate(
+    request: dict[str, Any],
+    emit,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    """Run the PPTX translation pipeline via the executor API.
+
+    Extracts the necessary parameters from the request, builds a
+    translator, and delegates to ``translate_pptx()`` which handles
+    mono and/or dual output depending on config.
+    """
+    workroot = get_workroot()
+    paths = _required_object(request, "paths")
+    translation = _required_object(request, "translation_config")
+    runtime_limits = _required_object(request, "runtime_limits")
+    gateways = _required_object(request, "gateways")
+
+    input_file = resolve_file(workroot, _required_str(paths, "input_file"))
+    output_dir = resolve_dir(workroot, _required_str(paths, "output_dir"), create=True)
+
+    qps = _required_int(runtime_limits, "qps")
+    set_translate_rate_limiter(qps)
+
+    translator = _create_translator(
+        _required_object(gateways, "main_llm"),
+        translation,
+    )
+
+    from babeldoc.format.pptx.pptx_translate import translate_pptx
+
+    emit("progress", {"type": "babeldoc_version", "version": babeldoc_version})
+
+    result = translate_pptx(
+        input_file=str(input_file),
+        output_dir=str(output_dir),
+        translator=translator,
+        lang_in=_required_str(translation, "lang_in"),
+        lang_out=_required_str(translation, "lang_out"),
+        no_dual=_required_bool(translation, "no_dual"),
+        no_mono=_required_bool(translation, "no_mono"),
+    )
+
+    logger.info(
+        "PPTX execution finished: task_id=%s mono=%s dual=%s elapsed=%.2fs",
+        task_id or "unknown",
+        result.get("output_path"),
+        result.get("dual_output_path"),
+        result.get("total_seconds", 0),
+    )
+    return result
+
+
+def _pptx_result_to_payload(result: dict[str, Any]) -> dict[str, Any]:
+    """Convert a ``translate_pptx()`` result dict into an executor payload."""
+    workroot = get_workroot()
+    files: dict[str, str] = {}
+    mono = result.get("output_path")
+    dual = result.get("dual_output_path")
+    if isinstance(mono, str):
+        rel = relative_to_workroot(workroot, Path(mono))
+        if isinstance(rel, str):
+            files["mono_pptx"] = rel
+    if isinstance(dual, str):
+        rel = relative_to_workroot(workroot, Path(dual))
+        if isinstance(rel, str):
+            files["dual_pptx"] = rel
     return {
         "files": files,
         "metrics": {

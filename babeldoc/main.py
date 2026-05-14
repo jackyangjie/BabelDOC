@@ -616,8 +616,8 @@ async def main():
         if not Path(file).exists():
             logger.error(f"文件不存在：{file}")
             exit(1)
-        if not file.lower().endswith(".pdf") and not file.lower().endswith(".docx"):
-            logger.error(f"不支持的文件格式：{file}（仅支持 .pdf 和 .docx）")
+        if not file.lower().endswith(".pdf") and not file.lower().endswith(".docx") and not file.lower().endswith(".doc") and not file.lower().endswith(".pptx") and not file.lower().endswith(".ppt"):
+            logger.error(f"不支持的文件格式：{file}（仅支持 .pdf、.docx、.doc、.pptx 和 .ppt）")
             exit(1)
         pending_files.append(file)
 
@@ -676,8 +676,8 @@ async def main():
         file = file.strip("\"'")
         file_ext = Path(file).suffix.lower()
 
-        # DOCX support: route to dedicated DOCX pipeline
-        if file_ext == ".docx":
+        # DOCX support: route to dedicated DOCX pipeline (supports .doc and .docx)
+        if file_ext in (".doc", ".docx"):
             from babeldoc.format.docx.docx_translate import translate_docx
 
             result = translate_docx(
@@ -698,6 +698,32 @@ async def main():
             if result.get("dual_output_path"):
                 logger.info(
                     "Dual-language DOCX: %s",
+                    result["dual_output_path"],
+                )
+            continue
+
+        # PPTX support: route to dedicated PPTX pipeline
+        if file_ext in (".ppt", ".pptx"):
+            from babeldoc.format.pptx.pptx_translate import translate_pptx
+
+            result = translate_pptx(
+                input_file=file,
+                output_dir=args.output,
+                translator=translator,
+                lang_in=args.lang_in,
+                lang_out=args.lang_out,
+                no_dual=args.no_dual,
+                no_mono=args.no_mono,
+            )
+            if result.get("output_path"):
+                logger.info(
+                    "Monolingual PPTX: %s (%.2f seconds)",
+                    result["output_path"],
+                    result["total_seconds"],
+                )
+            if result.get("dual_output_path"):
+                logger.info(
+                    "Dual-language PPTX: %s",
                     result["dual_output_path"],
                 )
             continue

@@ -446,6 +446,7 @@ def _create_runner(runner_name: str):
                 "babeldoc.tools.executor.runner",
                 "babeldoc.tools.executor.babeldoc_adapter",
                 "babeldoc.format.pdf.high_level",
+                "babeldoc.format.pptx.pptx_translate",
                 "babeldoc.docvision.rpc_doclayout8",
             ),
         )
