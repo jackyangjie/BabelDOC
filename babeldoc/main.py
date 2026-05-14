@@ -616,8 +616,8 @@ async def main():
         if not Path(file).exists():
             logger.error(f"文件不存在：{file}")
             exit(1)
-        if not file.lower().endswith(".pdf"):
-            logger.error(f"文件不是 PDF 文件：{file}")
+        if not file.lower().endswith(".pdf") and not file.lower().endswith(".docx"):
+            logger.error(f"不支持的文件格式：{file}（仅支持 .pdf 和 .docx）")
             exit(1)
         pending_files.append(file)
 
@@ -674,6 +674,34 @@ async def main():
     for file in pending_files:
         # 清理文件路径，去除两端的引号
         file = file.strip("\"'")
+        file_ext = Path(file).suffix.lower()
+
+        # DOCX support: route to dedicated DOCX pipeline
+        if file_ext == ".docx":
+            from babeldoc.format.docx.docx_translate import translate_docx
+
+            result = translate_docx(
+                input_file=file,
+                output_dir=args.output,
+                translator=translator,
+                lang_in=args.lang_in,
+                lang_out=args.lang_out,
+                no_dual=args.no_dual,
+                no_mono=args.no_mono,
+            )
+            if result.get("output_path"):
+                logger.info(
+                    "Monolingual DOCX: %s (%.2f seconds)",
+                    result["output_path"],
+                    result["total_seconds"],
+                )
+            if result.get("dual_output_path"):
+                logger.info(
+                    "Dual-language DOCX: %s",
+                    result["dual_output_path"],
+                )
+            continue
+
         # 创建配置对象
         config = TranslationConfig(
             input_file=file,

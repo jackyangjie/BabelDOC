@@ -34,33 +34,45 @@ def run_babeldoc_request(request: dict[str, Any], progress_send, cancel_recv) ->
         progress_send.send({"type": event_type, "payload": payload})
 
     try:
-        config_started_at = time.monotonic()
-        config = build_translation_config(request, task_id=task_id)
-        config_elapsed = time.monotonic() - config_started_at
-        logger.info(
-            "BabelDOC execution started: task_id=%s input=%s output_dir=%s pages=%s lang_in=%s lang_out=%s model=%s config_elapsed=%.3fs",
-            task_id,
-            getattr(config, "input_file", None),
-            getattr(config, "output_dir", None),
-            getattr(config, "pages", None),
-            getattr(config, "lang_in", None),
-            getattr(config, "lang_out", None),
-            getattr(config, "model", None),
-            config_elapsed,
-        )
-        cancel_state.attach_config(config)
-        stop_cancel_watcher = threading.Event()
-        cancel_watcher = threading.Thread(
-            target=_watch_cancel_pipe,
-            args=(cancel_recv, cancel_state, stop_cancel_watcher),
-            name="executor-cancel-watch",
-            daemon=True,
-        )
-        cancel_watcher.start()
+        # Detect file type and route to the appropriate pipeline
+        workroot = get_workroot()
+        paths = _required_object(request, "paths")
+        raw_input_path = resolve_file(workroot, _required_str(paths, "input_file"))
 
-        result = _run_async_translate(config, emit)
-        logger.info("BabelDOC execution finished: task_id=%s", task_id)
-        emit("result", translate_result_to_payload(result, config))
+        if str(raw_input_path).lower().endswith(".docx"):
+            # === DOCX pipeline ===
+            result = _run_docx_translate(request, emit, task_id=task_id)
+            logger.info("DOCX execution finished: task_id=%s", task_id)
+            emit("result", _docx_result_to_payload(result))
+        else:
+            # === PDF pipeline (existing) ===
+            config_started_at = time.monotonic()
+            config = build_translation_config(request, task_id=task_id)
+            config_elapsed = time.monotonic() - config_started_at
+            logger.info(
+                "BabelDOC execution started: task_id=%s input=%s output_dir=%s pages=%s lang_in=%s lang_out=%s model=%s config_elapsed=%.3fs",
+                task_id,
+                getattr(config, "input_file", None),
+                getattr(config, "output_dir", None),
+                getattr(config, "pages", None),
+                getattr(config, "lang_in", None),
+                getattr(config, "lang_out", None),
+                getattr(config, "model", None),
+                config_elapsed,
+            )
+            cancel_state.attach_config(config)
+            stop_cancel_watcher = threading.Event()
+            cancel_watcher = threading.Thread(
+                target=_watch_cancel_pipe,
+                args=(cancel_recv, cancel_state, stop_cancel_watcher),
+                name="executor-cancel-watch",
+                daemon=True,
+            )
+            cancel_watcher.start()
+
+            result = _run_async_translate(config, emit)
+            logger.info("BabelDOC execution finished: task_id=%s", task_id)
+            emit("result", translate_result_to_payload(result, config))
     except Exception as exc:
         logger.exception("BabelDOC execution failed: task_id=%s", task_id)
         user_message = (
@@ -334,6 +346,82 @@ def _run_async_translate(config: TranslationConfig, emit) -> TranslateResult:
         raise RuntimeError("BabelDOC async_translate ended without finish event")
 
     return asyncio.run(run())
+
+
+def _run_docx_translate(
+    request: dict[str, Any],
+    emit,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    """Run the DOCX translation pipeline via the executor API.
+
+    Extracts the necessary parameters from the request, builds a
+    translator, and delegates to ``translate_docx()`` which handles
+    mono and/or dual output depending on config.
+    """
+    workroot = get_workroot()
+    paths = _required_object(request, "paths")
+    translation = _required_object(request, "translation_config")
+    runtime_limits = _required_object(request, "runtime_limits")
+    gateways = _required_object(request, "gateways")
+
+    input_file = resolve_file(workroot, _required_str(paths, "input_file"))
+    output_dir = resolve_dir(workroot, _required_str(paths, "output_dir"), create=True)
+
+    qps = _required_int(runtime_limits, "qps")
+    set_translate_rate_limiter(qps)
+
+    translator = _create_translator(
+        _required_object(gateways, "main_llm"),
+        translation,
+    )
+
+    from babeldoc.format.docx.docx_translate import translate_docx
+
+    emit("progress", {"type": "babeldoc_version", "version": babeldoc_version})
+
+    result = translate_docx(
+        input_file=str(input_file),
+        output_dir=str(output_dir),
+        translator=translator,
+        lang_in=_required_str(translation, "lang_in"),
+        lang_out=_required_str(translation, "lang_out"),
+        no_dual=_required_bool(translation, "no_dual"),
+        no_mono=_required_bool(translation, "no_mono"),
+    )
+
+    logger.info(
+        "DOCX execution finished: task_id=%s mono=%s dual=%s elapsed=%.2fs",
+        task_id or "unknown",
+        result.get("output_path"),
+        result.get("dual_output_path"),
+        result.get("total_seconds", 0),
+    )
+    return result
+
+
+def _docx_result_to_payload(result: dict[str, Any]) -> dict[str, Any]:
+    """Convert a ``translate_docx()`` result dict into an executor payload."""
+    workroot = get_workroot()
+    files: dict[str, str] = {}
+    mono = result.get("output_path")
+    dual = result.get("dual_output_path")
+    if isinstance(mono, str):
+        rel = relative_to_workroot(workroot, Path(mono))
+        if isinstance(rel, str):
+            files["mono_docx"] = rel
+    if isinstance(dual, str):
+        rel = relative_to_workroot(workroot, Path(dual))
+        if isinstance(rel, str):
+            files["dual_docx"] = rel
+    return {
+        "files": files,
+        "metrics": {
+            "time_consume_seconds": _number_or_zero(
+                result.get("total_seconds")
+            ),
+        },
+    }
 
 
 class BabelDocReportedError(RuntimeError):
