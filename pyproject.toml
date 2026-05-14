@@ -53,6 +53,11 @@ dependencies = [
     "uharfbuzz>=0.50.2",
     "scikit-learn>=1.7.1",
     "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
+    "olefile>=0.47",
+    "docx2txt>=0.9",
+    "textract>=2.0.0",
+    "antiword>=0.1.0",
 ]
 
 [project.optional-dependencies]
