@@ -55,8 +55,8 @@ def translate_docx(
     input_path = Path(input_file)
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_file}")
-    if input_path.suffix.lower() != ".docx":
-        raise ValueError(f"Expected .docx file, got: {input_path.suffix}")
+    if input_path.suffix.lower() not in (".doc", ".docx"):
+        raise ValueError(f"Expected .doc/.docx file, got: {input_path.suffix}")
 
     output_dir_path = Path(output_dir) if output_dir else input_path.parent
     output_dir_path.mkdir(parents=True, exist_ok=True)
