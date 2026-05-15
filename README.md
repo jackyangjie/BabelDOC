@@ -29,6 +29,8 @@
 
 </div>
 
+**English | [中文](./README_zh.md)**
+
 PDF / DOCX scientific paper translation and bilingual comparison library.
 
 - Translate **PDF** files with complex layouts, formulas, tables, and embedded images
