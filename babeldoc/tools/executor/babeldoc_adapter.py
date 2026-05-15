@@ -393,6 +393,7 @@ def _run_docx_translate(
         lang_out=_required_str(translation, "lang_out"),
         no_dual=_required_bool(translation, "no_dual"),
         no_mono=_required_bool(translation, "no_mono"),
+        translate_image_text=translation.get("translate_image_text", True),
     )
 
     logger.info(
