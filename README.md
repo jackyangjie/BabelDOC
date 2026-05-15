@@ -29,8 +29,11 @@
 
 </div>
 
-PDF scientific paper translation and bilingual comparison library.
+PDF / DOCX scientific paper translation and bilingual comparison library.
 
+- Translate **PDF** files with complex layouts, formulas, tables, and embedded images
+- Translate **DOCX** (Word) files with paragraph, table, and embedded image text translation
+- Dual-language (bilingual) output: mono (translated only) + dual (original/translation side-by-side)
 - **Online Service**: Beta version launched [Immersive Translate - BabelDOC](https://app.immersivetranslate.com/babel-doc/) Free usage quota is available; please refer to the FAQ section on the page for details.
 - **Self-deployment**: [PDFMathTranslate-next](https://github.com/PDFMathTranslate-next/PDFMathTranslate-next) support for BabelDOC, available for self-deployment + WebUI with more translation services.
 - Provides a simple [command line interface](#getting-started).
@@ -76,10 +79,14 @@ babeldoc --help
 3. Use the `babeldoc` command. For example:
 
 ```bash
-babeldoc --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here"  --files example.pdf
+# PDF translation (mono + dual output)
+babeldoc --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here" --files example.pdf
 
-# multiple files
-babeldoc --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here"  --files example1.pdf --files example2.pdf
+# DOCX / Word translation (mono + dual output, including image text)
+babeldoc --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here" --files example.docx
+
+# multiple files (PDF and DOCX mixed)
+babeldoc --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here" --files example1.pdf --files example2.docx
 ```
 
 ### Install from Source
@@ -104,10 +111,14 @@ uv run babeldoc --help
 3. Use the `uv run babeldoc` command. For example:
 
 ```bash
+# PDF
 uv run babeldoc --files example.pdf --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here"
 
-# multiple files
-uv run babeldoc --files example.pdf --files example2.pdf --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here"
+# DOCX / Word
+uv run babeldoc --files example.docx --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here"
+
+# multiple files mixed
+uv run babeldoc --files example.pdf --files example2.docx --openai --openai-model "gpt-4o-mini" --openai-base-url "https://api.openai.com/v1" --openai-api-key "your-api-key-here"
 ```
 
 > [!TIP]
@@ -358,8 +369,14 @@ We offer an intermediate representation of the results from parser and can be re
 
 ## Roadmap
 
-- [ ] Add line support
+- [x] PDF text translation with layout preservation
+- [x] PDF formula translation
+- [x] PDF embedded image text translation (OCR + overlay)
+- [x] DOCX text translation (paragraphs, tables)
+- [x] DOCX embedded image text translation (OCR + overlay)
+- [x] Dual-language bilingual output (PDF / DOCX)
 - [ ] Add table support
+- [ ] Add line support
 - [ ] Add cross-page/cross-column paragraph support
 - [ ] More advanced typesetting features
 - [ ] Outline support
@@ -393,9 +410,11 @@ This project uses a combination of [Semantic Versioning](https://semver.org/) an
 ## Known Issues
 
 1. Parsing errors in the author and reference sections; they get merged into one paragraph after translation.
-2. Lines are not supported.
-3. Does not support drop caps.
-4. Large pages will be skipped.
+2. Complex table structures are not fully supported.
+3. Line art is not supported.
+4. Does not support drop caps.
+5. Large pages will be skipped.
+6. DOCX embedded images: JPEG images are converted to PNG after translation overlay (file size may increase).
 
 ## How to Contribute
 
@@ -421,6 +440,8 @@ step by step.
 - [DocLayout-YOLO](https://github.com/opendatalab/DocLayout-YOLO)
 - [pdfminer](https://github.com/pdfminer/pdfminer.six)
 - [PyMuPDF](https://github.com/pymupdf/PyMuPDF)
+- [RapidOCR](https://github.com/RapidAI/RapidOCR) (image text detection)
+- [python-docx](https://github.com/python-openxml/python-docx) (DOCX support)
 - [Asynchronize](https://github.com/multimeric/Asynchronize/tree/master?tab=readme-ov-file)
 - [PriorityThreadPoolExecutor](https://github.com/oleglpts/PriorityThreadPoolExecutor)
 
