@@ -967,6 +967,17 @@ def _do_translate_single(
             docs,
             translation_config.get_working_file_path("add_debug_information.json"),
         )
+    # Image text translation: OCR text in images, translate, overlay
+    from babeldoc.format.pdf.document_il.midend.image_translator import ImageTranslator
+
+    ImageTranslator(translation_config).process(docs, doc_pdf2zh, translate_engine)
+    logger.debug(f"finish image translation from {temp_pdf_path}")
+    if translation_config.debug:
+        xml_converter.write_json(
+            docs,
+            translation_config.get_working_file_path("image_translated.json"),
+        )
+
     mono_watermark_first_page_doc_bytes = None
     dual_watermark_first_page_doc_bytes = None
     try:
