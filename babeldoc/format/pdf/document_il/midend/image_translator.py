@@ -16,6 +16,7 @@ import base64
 import io
 import json
 import logging
+import re
 
 import fitz
 from PIL import Image as PILImage
@@ -84,6 +85,7 @@ class ImageTranslator:
         ocr = self._get_ocr()
 
         for page in document.page:
+            # Process PdfForm entries (Phase 1)
             for form in page.pdf_form:
                 if form.form_type != "image":
                     continue
@@ -95,6 +97,14 @@ class ImageTranslator:
                         page.page_number,
                         form.xobj_id,
                     )
+            # Process page-level XObject images (Phase 2)
+            try:
+                self._process_page_resources(page, mupdf_doc, ocr, translator)
+            except Exception:
+                logger.exception(
+                    "ImageTranslator: page resource scan failed on page %s",
+                    page.page_number,
+                )
 
     # ------------------------------------------------------------------
     # Per-form processing
@@ -233,7 +243,15 @@ class ImageTranslator:
             text = text.strip()
             if not text:
                 continue
-            filtered.append((list(box), text, float(confidence)))
+            # RapidOCR returns quadrilateral: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+            # Convert to bounding box: [x_min, y_min, x_max, y_max]
+            if isinstance(box, list) and len(box) == 4 and isinstance(box[0], list):
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                flat_box = [min(xs), min(ys), max(xs), max(ys)]
+            else:
+                flat_box = list(box)
+            filtered.append((flat_box, text, float(confidence)))
         return filtered
 
     # ------------------------------------------------------------------
@@ -300,7 +318,7 @@ class ImageTranslator:
         image: PILImage.Image,
         ocr_results: list[tuple[list[float], str, float]],
         text_to_translation: dict[str, str],
-        _ext: str,
+        ext: str,
     ) -> bytes:
         """Render translated text onto the image, hiding original text.
 
@@ -311,10 +329,9 @@ class ImageTranslator:
              size scaled to fit.
 
         Returns:
-            PNG-encoded image bytes.
+            Re-encoded image bytes (JPEG for photos, PNG for diagrams/drawings).
         """
-        from PIL import ImageDraw
-        from PIL import ImageFont
+        from PIL import ImageDraw, ImageFont
 
         draw = ImageDraw.Draw(image)
 
@@ -373,9 +390,13 @@ class ImageTranslator:
             # Draw translated text in dark color
             draw.text((tx, ty), translated, fill=(0, 0, 0), font=used_font)
 
-        # Encode back to bytes
+        # Encode back to bytes, preserving original format
         buf = io.BytesIO()
-        image.save(buf, format="PNG")
+        save_format = ext.upper() if ext.upper() in ("JPEG", "JPG", "PNG") else "PNG"
+        save_kwargs: dict = {"format": save_format}
+        if save_format in ("JPEG", "JPG"):
+            save_kwargs["quality"] = 85
+        image.save(buf, **save_kwargs)
         return buf.getvalue()
 
     def _sample_background_color(
@@ -515,3 +536,129 @@ class ImageTranslator:
             pdf_inline_form=inline_form,
             pdf_xobj_form=None,
         )
+
+    # ------------------------------------------------------------------
+    # Page-level XObject image processing (Phase 2)
+    # ------------------------------------------------------------------
+
+    def _process_page_resources(
+        self,
+        page: il_version_1.Page,
+        mupdf_doc: fitz.Document,
+        ocr: RapidOCR,
+        translator: BaseTranslator,
+    ) -> None:
+        """Scan page-level XObject resources for image XObjects and translate.
+
+        Handles images that are NOT in page.pdf_form (orphan images).
+        Results stored in translation_config._page_translated_images.
+        """
+        pn = page.page_number
+        if pn is None or pn < 0 or pn >= mupdf_doc.page_count:
+            return
+
+        page_xref = mupdf_doc[pn].xref
+
+        # Get page Resources
+        res_type, res_value = mupdf_doc.xref_get_key(page_xref, "Resources")
+        if res_type != "dict":
+            return
+
+        # Parse Resources to find XObject entries
+        try:
+            xobj_match = re.search(r"/XObject\s*<<(.+?)>>", res_value)
+            if not xobj_match:
+                return
+            xobj_section = xobj_match.group(1)
+            # Find /Name xref 0 R patterns
+            xobjs = re.findall(r"/(\w+)\s+(\d+)\s+0\s+R", xobj_section)
+        except Exception:
+            return
+
+        page_translated: dict[int, bytes] = {}
+
+        for name, xref_str in xobjs:
+            xref = int(xref_str)
+            try:
+                # Skip if already processed via PdfForm path (check xref)
+                obj_str = mupdf_doc.xref_object(xref)
+                if "/Subtype /Image" not in obj_str:
+                    continue
+
+                # Extract image
+                pix = mupdf_doc.extract_image(xref)
+                if pix is None:
+                    continue
+                img_bytes = pix["image"]
+                ext = pix["ext"]
+
+                # OCR
+                ocr_results = self._ocr_image(img_bytes, ocr)
+                if not ocr_results:
+                    continue
+
+                # Translate
+                unique_texts = list({text for _, text, _ in ocr_results})
+                if sum(len(t) for t in unique_texts) < _MIN_TEXT_LENGTH:
+                    continue
+
+                translations = self._translate_texts(unique_texts, translator)
+                if not translations:
+                    continue
+                text_to_translation = dict(
+                    zip(unique_texts, translations, strict=False),
+                )
+
+                # Overlay
+                pil_image = PILImage.open(io.BytesIO(img_bytes))
+                if pil_image.mode not in ("RGB", "RGBA"):
+                    pil_image = pil_image.convert("RGB")
+                new_bytes = self._overlay_translations(
+                    pil_image,
+                    ocr_results,
+                    text_to_translation,
+                    ext,
+                )
+                page_translated[xref] = new_bytes
+                logger.info(
+                    "ImageTranslator: translated /%s (xref %s) on page %s",
+                    name,
+                    xref,
+                    pn,
+                )
+
+            except Exception:
+                logger.debug(
+                    "ImageTranslator: failed for /%s (xref %s) on page %s",
+                    name,
+                    xref,
+                    pn,
+                    exc_info=True,
+                )
+                continue
+
+        if page_translated:
+            # Write modified images directly to the temp PDF file
+            temp_pdf_path = self.translation_config.get_working_file_path("input.pdf")
+            try:
+                temp_doc = fitz.open(temp_pdf_path)
+                for xref, new_data in page_translated.items():
+                    try:
+                        temp_doc.update_stream(xref, new_data)
+                    except Exception:
+                        logger.warning(
+                            "ImageTranslator: failed to update stream xref %s",
+                            xref,
+                        )
+                temp_doc.save(temp_pdf_path, incremental=True, encryption=0)
+                temp_doc.close()
+                logger.info(
+                    "ImageTranslator: saved %d translated images for page %s",
+                    len(page_translated),
+                    pn,
+                )
+            except Exception:
+                logger.warning(
+                    "ImageTranslator: failed to save translated images to temp PDF",
+                    exc_info=True,
+                )

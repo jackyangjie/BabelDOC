@@ -337,6 +337,7 @@ class TranslationConfig:
         self.auto_extract_glossary = auto_extract_glossary
         self.auto_enable_ocr_workaround = auto_enable_ocr_workaround
         self.translate_image_text = translate_image_text
+        self._page_translated_images: dict[int, dict[int, bytes]] = {}
         self.skip_translation = skip_translation
         self.only_parse_generate_pdf = only_parse_generate_pdf
 
