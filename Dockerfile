@@ -40,6 +40,7 @@ FROM python:3.12-slim
 #   - libzstd1              : pyzstd
 #   - fonts-noto-cjk        : CJK font for image text overlay
 #   - fontconfig            : fc-cache for font discovery
+#   - libreoffice-writer    : convert old .ppt → .pptx (uncomment if needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
