@@ -332,11 +332,10 @@ def _replace_images(doc: DocxDocument_PythonDocx, docx_doc: DocxDocument) -> Non
 
     replaced = 0
     for rel in doc.part.rels.values():
-        part = rel.target_part
-        try:
-            partname = part.partname
-        except AttributeError:
+        if rel.is_external:
             continue
+        part = rel.target_part
+        partname = part.partname
         filename = partname.rsplit("/", 1)[-1]
         if filename in translated_map:
             try:
