@@ -305,7 +305,7 @@ def write_dual_docx(
         _set_two_columns(doc)
         _inject_dual_paragraphs(doc, docx_doc)
         _replace_table_cells_keep_original(doc, docx_doc)
-        _replace_images(doc, docx_doc)
+        _inject_dual_images(doc, docx_doc)
 
         doc.save(output_path)
         logger.info("Dual-language DOCX saved to: %s", output_path)
@@ -348,3 +348,90 @@ def _replace_images(doc: DocxDocument_PythonDocx, docx_doc: DocxDocument) -> Non
 
     if replaced:
         logger.info("Replaced %d translated images in DOCX", replaced)
+
+
+def _inject_dual_images(doc: DocxDocument_PythonDocx, docx_doc: DocxDocument) -> None:
+    """For dual mode: keep original images in left column, inject translated
+    copies into the right column via column breaks.
+
+    Original image paragraphs are left untouched.  A column‑break paragraph
+    followed by a new paragraph containing the translated image is inserted
+    immediately after each original image paragraph.
+    """
+    from io import BytesIO
+
+    from docx.shared import Inches
+    from PIL import Image as PILImage
+
+    translated_map = {
+        img.filename: img.translated_data
+        for img in docx_doc.images
+        if img.translated_data is not None
+    }
+    if not translated_map:
+        return
+
+    WPML = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+
+    doc_paras = list(doc.paragraphs)
+    image_records = []
+
+    for i, para in enumerate(doc_paras):
+        for drawing in para._element.findall(f".//{{{WPML}}}drawing"):
+            for blip in drawing.findall(f".//{{{A}}}blip"):
+                r_id = blip.get(qn("r:embed"))
+                if not r_id:
+                    continue
+                try:
+                    part = doc.part.related_parts[r_id]
+                    filename = part.partname.rsplit("/", 1)[-1]
+                except (KeyError, AttributeError):
+                    continue
+                if filename not in translated_map:
+                    continue
+
+                pil_img = PILImage.open(BytesIO(translated_map[filename]))
+                width_px, height_px = pil_img.size
+
+                inline = drawing.find(f"{{{WP}}}inline")
+                extent = None if inline is None else inline.find(f"{{{WP}}}extent")
+                if extent is not None:
+                    cx = int(extent.get("cx", "0"))
+                    cy = int(extent.get("cy", "0"))
+                else:
+                    cx, cy = width_px * 9525, height_px * 9525
+
+                image_records.append(
+                    (i, translated_map[filename], cx, cy)
+                )
+
+    for para_idx, img_data, cx, cy in reversed(image_records):
+        para_elem = doc_paras[para_idx]._element
+
+        _insert_column_break_after(para_elem)
+        col_break_elem = para_elem.getnext()
+
+        width_inches = cx / 914400.0
+        height_inches = cy / 914400.0
+
+        new_para = doc.add_paragraph()
+        new_run = new_para.add_run()
+        new_run.add_picture(
+            BytesIO(img_data),
+            width=Inches(width_inches),
+            height=Inches(height_inches),
+        )
+
+        new_elem = new_para._element
+        new_elem.getparent().remove(new_elem)
+        col_break_elem.addnext(new_elem)
+
+        _insert_column_break_after(new_elem)
+
+    if image_records:
+        logger.info(
+            "Injected %d translated images into dual DOCX right column",
+            len(image_records),
+        )
