@@ -1366,6 +1366,83 @@ class PDFCreater:
                 f"{basename}{debug_suffix}.{translation_config.lang_out}.mono.pdf",
             )
             pdf = pymupdf.open(self.original_pdf_path)
+            # Apply translated images from ImageTranslator Phase 2
+            if self.translation_config._page_translated_images:
+                import io
+
+                from PIL import Image as PILImage
+
+                for (
+                    _page_num,
+                    images,
+                ) in self.translation_config._page_translated_images.items():
+                    for xref, (_name, new_data) in images.items():
+                        try:
+                            obj_str = pdf.xref_object(xref)
+                            has_dct = "/DCTDecode" in obj_str
+                            has_flate = "/FlateDecode" in obj_str
+                            has_indexed = "/Indexed" in obj_str
+
+                            if has_indexed:
+                                logger.warning(
+                                    "PDFCreater: skipping Indexed image xref %s",
+                                    xref,
+                                )
+                                continue
+
+                            # Convert to JPEG for consistency
+                            pil_img = PILImage.open(io.BytesIO(new_data))
+                            if pil_img.mode in ("RGBA", "P"):
+                                pil_img = pil_img.convert("RGB")
+
+                            if has_flate:
+                                # Keep FlateDecode: write zlib-compressed raw pixels.
+                                # Avoids DCTDecode which conflicts with save(deflate_images=True)
+                                import zlib
+
+                                raw_pixels = pil_img.tobytes()
+                                compressed = zlib.compress(raw_pixels)
+                                pdf.update_stream(xref, compressed, compress=False)
+                                pdf.xref_set_key(xref, "Length", str(len(compressed)))
+                                pdf.xref_set_key(xref, "ColorSpace", "/DeviceRGB")
+                                pdf.xref_set_key(
+                                    xref,
+                                    "Width",
+                                    str(pil_img.width),
+                                )
+                                pdf.xref_set_key(
+                                    xref,
+                                    "Height",
+                                    str(pil_img.height),
+                                )
+                                pdf.xref_set_key(
+                                    xref,
+                                    "BitsPerComponent",
+                                    "8",
+                                )
+                                for key in (
+                                    "DecodeParms",
+                                    "SMask",
+                                    "Decode",
+                                ):
+                                    try:
+                                        pdf.xref_set_key(xref, key, "null")
+                                    except Exception:
+                                        pass
+                            else:
+                                # DCT images: just update JPEG data
+                                buf = io.BytesIO()
+                                pil_img.save(buf, format="JPEG", quality=85)
+                                jpeg_data = buf.getvalue()
+                                pdf.update_stream(xref, jpeg_data, compress=False)
+                                pdf.xref_set_key(xref, "Length", str(len(jpeg_data)))
+
+                        except Exception:
+                            logger.warning(
+                                "PDFCreater: failed to update image stream xref %s",
+                                xref,
+                                exc_info=True,
+                            )
             self.font_mapper.add_font(pdf, self.docs)
             with self.translation_config.progress_monitor.stage_start(
                 self.stage_name,
@@ -1650,4 +1727,114 @@ class PDFCreater:
             candidate_resource_xrefs,
         )
         pdf.update_stream(op_container, stream)
+
+        # Re-insert orphan image Do blocks from original content stream
+        if (
+            translation_config._page_translated_images
+            and page.page_number in translation_config._page_translated_images
+        ):
+            orig_page = pdf[page.page_number]
+            orig_content = orig_page.read_contents()
+            orphan_names = {
+                name
+                for name, _ in translation_config._page_translated_images[
+                    page.page_number
+                ].values()
+            }
+            logger.debug(
+                "PDFCreater: page %s orphan re-insert: names=%s, orig_content_len=%s",
+                page.page_number,
+                orphan_names,
+                len(orig_content),
+            )
+            blocks = []
+            for name in orphan_names:
+                search_str = f"/{name} Do".encode()
+                idx = 0
+                while True:
+                    idx = orig_content.find(search_str, idx)
+                    if idx < 0:
+                        break
+                    q_pos = orig_content.rfind(b"q", 0, idx)
+                    q_end_pos = orig_content.find(b"Q", idx)
+                    if q_pos >= 0 and q_end_pos >= 0:
+                        block = orig_content[q_pos : q_end_pos + 1]
+                        blocks.append(block)
+                        logger.debug(
+                            "PDFCreater: found q...Q block for /%s (%d bytes)",
+                            name,
+                            len(block),
+                        )
+                    else:
+                        # Not wrapped in q...Q; keep just the Do operator
+                        blocks.append(search_str)
+                        logger.debug(
+                            "PDFCreater: bare Do for /%s (no q...Q)",
+                            name,
+                        )
+                    idx += len(search_str)
+            if blocks:
+                current_stream = pdf.xref_stream(op_container)
+                logger.debug(
+                    "PDFCreater: prepending %d orphan blocks (stream before=%d bytes)",
+                    len(blocks),
+                    len(current_stream),
+                )
+                # Prepend orphan blocks BEFORE IL-generated content.
+                # IL may create broken inline images (BI...EI) that cause
+                # syntax errors; by putting orphan XObject Do blocks first,
+                # they survive even if the inline image data is truncated.
+                new_stream = b"\n".join(blocks) + b"\n" + current_stream
+                pdf.update_stream(op_container, new_stream)
+            else:
+                logger.warning(
+                    "PDFCreater: page %s orphan blocks EMPTY (names=%s)",
+                    page.page_number,
+                    orphan_names,
+                )
+
+        # Ensure orphan image XObject references are in page Resources BEFORE set_contents
+        if (
+            translation_config._page_translated_images
+            and page.page_number in translation_config._page_translated_images
+        ):
+            page_xref = pdf[page.page_number].xref
+            for xref, (name, _) in translation_config._page_translated_images[
+                page.page_number
+            ].items():
+                try:
+                    pdf.xref_set_key(
+                        page_xref,
+                        f"Resources/XObject/{name}",
+                        f"{xref} 0 R",
+                    )
+                except Exception:
+                    logger.warning(
+                        "PDFCreater: failed to set resource for %s",
+                        name,
+                        exc_info=True,
+                    )
+
         pdf[page.page_number].set_contents(op_container)
+
+        # Double-check Resources after set_contents
+        if (
+            translation_config._page_translated_images
+            and page.page_number in translation_config._page_translated_images
+        ):
+            page_xref = pdf[page.page_number].xref
+            for xref, (name, _) in translation_config._page_translated_images[
+                page.page_number
+            ].items():
+                try:
+                    res_type, _ = pdf.xref_get_key(
+                        page_xref, f"Resources/XObject/{name}"
+                    )
+                    if res_type == "null":
+                        pdf.xref_set_key(
+                            page_xref,
+                            f"Resources/XObject/{name}",
+                            f"{xref} 0 R",
+                        )
+                except Exception:
+                    pass

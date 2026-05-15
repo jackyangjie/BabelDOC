@@ -688,6 +688,7 @@ async def main():
                 lang_out=args.lang_out,
                 no_dual=args.no_dual,
                 no_mono=args.no_mono,
+                translate_image_text=True,
             )
             if result.get("output_path"):
                 logger.info(

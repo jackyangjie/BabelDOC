@@ -20,6 +20,8 @@ import re
 
 import fitz
 from PIL import Image as PILImage
+from PIL import ImageDraw
+from PIL import ImageFont
 from rapidocr_onnxruntime import RapidOCR
 
 from babeldoc.format.pdf.document_il import il_version_1
@@ -331,8 +333,6 @@ class ImageTranslator:
         Returns:
             Re-encoded image bytes (JPEG for photos, PNG for diagrams/drawings).
         """
-        from PIL import ImageDraw, ImageFont
-
         draw = ImageDraw.Draw(image)
 
         for box, original_text, _confidence in ocr_results:
@@ -575,7 +575,7 @@ class ImageTranslator:
         except Exception:
             return
 
-        page_translated: dict[int, bytes] = {}
+        page_translated: dict[int, tuple[str, bytes]] = {}
 
         for name, xref_str in xobjs:
             xref = int(xref_str)
@@ -583,6 +583,16 @@ class ImageTranslator:
                 # Skip if already processed via PdfForm path (check xref)
                 obj_str = mupdf_doc.xref_object(xref)
                 if "/Subtype /Image" not in obj_str:
+                    continue
+
+                # Skip Indexed color space images (too complex to re-quantize)
+                if "/Indexed" in obj_str:
+                    logger.debug(
+                        "ImageTranslator: skipping Indexed image /%s (xref %s) on page %s",
+                        name,
+                        xref,
+                        pn,
+                    )
                     continue
 
                 # Extract image
@@ -619,7 +629,7 @@ class ImageTranslator:
                     text_to_translation,
                     ext,
                 )
-                page_translated[xref] = new_bytes
+                page_translated[xref] = (name, new_bytes)
                 logger.info(
                     "ImageTranslator: translated /%s (xref %s) on page %s",
                     name,
@@ -638,27 +648,10 @@ class ImageTranslator:
                 continue
 
         if page_translated:
-            # Write modified images directly to the temp PDF file
-            temp_pdf_path = self.translation_config.get_working_file_path("input.pdf")
-            try:
-                temp_doc = fitz.open(temp_pdf_path)
-                for xref, new_data in page_translated.items():
-                    try:
-                        temp_doc.update_stream(xref, new_data)
-                    except Exception:
-                        logger.warning(
-                            "ImageTranslator: failed to update stream xref %s",
-                            xref,
-                        )
-                temp_doc.save(temp_pdf_path, incremental=True, encryption=0)
-                temp_doc.close()
-                logger.info(
-                    "ImageTranslator: saved %d translated images for page %s",
-                    len(page_translated),
-                    pn,
-                )
-            except Exception:
-                logger.warning(
-                    "ImageTranslator: failed to save translated images to temp PDF",
-                    exc_info=True,
-                )
+            # Store translated images for backend to apply
+            self.translation_config._page_translated_images[pn] = page_translated
+            logger.info(
+                "ImageTranslator: stored %d translated images for page %s",
+                len(page_translated),
+                pn,
+            )

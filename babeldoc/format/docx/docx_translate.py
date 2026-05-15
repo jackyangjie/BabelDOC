@@ -7,13 +7,20 @@ and rate limiting.
 
 from __future__ import annotations
 
+import io
 import logging
 import time
 from pathlib import Path
 
+from PIL import Image as PILImage
+from PIL import ImageDraw
+from PIL import ImageFont
+from rapidocr_onnxruntime import RapidOCR
+
 from babeldoc.format.docx.backend import write_docx
 from babeldoc.format.docx.backend import write_dual_docx
 from babeldoc.format.docx.frontend import read_docx
+from babeldoc.format.pdf.document_il.utils.font_discovery import find_cjk_font
 from babeldoc.translator.translator import BaseTranslator
 
 logger = logging.getLogger(__name__)
@@ -27,6 +34,7 @@ def translate_docx(
     lang_out: str,
     no_dual: bool = False,
     no_mono: bool = False,
+    translate_image_text: bool = True,
 ) -> dict:
     """Translate a .docx file.
 
@@ -82,6 +90,10 @@ def translate_docx(
 
     # Step 3: Translate table cells
     _translate_table_cells(docx_doc, translator)
+
+    # Step 3.5: Translate images (OCR + translate + overlay)
+    if translate_image_text and docx_doc.images:
+        _translate_docx_images(docx_doc, translator)
 
     # Step 4: Write output(s) — mirror PDF dual/mono behaviour
     if not no_mono:
@@ -153,3 +165,115 @@ def _translate_table_cells(docx_doc, translator: BaseTranslator) -> None:
                         translated,
                         total_cells,
                     )
+
+
+_OCR_CONFIDENCE_THRESHOLD = 0.5
+_MIN_IMAGE_TEXT_LENGTH = 3
+
+
+def _translate_docx_images(docx_doc, translator: BaseTranslator) -> None:
+    """OCR and translate text in embedded DOCX images."""
+    cjk_font_path = find_cjk_font()
+    if cjk_font_path is None:
+        logger.warning("No CJK font found; image translation may render as boxes")
+
+    ocr = RapidOCR()
+    logger.info(
+        "Translating text in %d images for DOCX",
+        len(docx_doc.images),
+    )
+
+    for img in docx_doc.images:
+        if img.original_data is None:
+            continue
+        try:
+            translated = _process_single_image(
+                img.original_data, ocr, translator, cjk_font_path
+            )
+            if translated is not None:
+                img.translated_data = translated
+                logger.info("DOCX image %s: text translated", img.filename)
+        except Exception:
+            logger.exception("Failed to translate image %s", img.filename)
+
+
+def _process_single_image(
+    image_data: bytes,
+    ocr: RapidOCR,
+    translator: BaseTranslator,
+    cjk_font_path: str | None,
+) -> bytes | None:
+    """OCR, translate, and overlay text on a single image."""
+    pil_image = PILImage.open(io.BytesIO(image_data))
+    if pil_image.mode not in ("RGB", "RGBA"):
+        pil_image = pil_image.convert("RGB")
+
+    result, _ = ocr(image_data)
+    if not result:
+        return None
+
+    ocr_results = []
+    for box, text, confidence in result:
+        if confidence < _OCR_CONFIDENCE_THRESHOLD:
+            continue
+        text = text.strip()
+        if not text:
+            continue
+        if isinstance(box, list) and len(box) == 4 and isinstance(box[0], list):
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            flat_box = [min(xs), min(ys), max(xs), max(ys)]
+        else:
+            flat_box = list(box)
+        ocr_results.append((flat_box, text, float(confidence)))
+
+    unique_texts = list({text for _, text, _ in ocr_results})
+    if sum(len(t) for t in unique_texts) < _MIN_IMAGE_TEXT_LENGTH:
+        return None
+
+    translations = []
+    for text in unique_texts:
+        try:
+            translated = translator.translate(text)
+            translations.append(translated)
+        except Exception:
+            logger.warning("Failed to translate image text: %s", text)
+            translations.append(text)
+
+    text_to_translation = dict(zip(unique_texts, translations, strict=False))
+
+    draw = ImageDraw.Draw(pil_image)
+    for box, original_text, _confidence in ocr_results:
+        translated = text_to_translation.get(original_text, original_text)
+        x1, y1, x2, y2 = box
+        x1_i, y1_i = max(0, int(x1)), max(0, int(y1))
+        x2_i, y2_i = min(pil_image.width, int(x2)), min(pil_image.height, int(y2))
+        if x2_i <= x1_i or y2_i <= y1_i:
+            continue
+
+        region_w, region_h = x2_i - x1_i, y2_i - y1_i
+        bg_color = (255, 255, 255)
+        draw.rectangle([x1_i, y1_i, x2_i, y2_i], fill=bg_color)
+
+        font_size = max(int(region_h * 0.55), 8)
+        try:
+            if cjk_font_path:
+                font = ImageFont.truetype(cjk_font_path, size=font_size)
+            else:
+                font = ImageFont.load_default()
+        except (OSError, TypeError):
+            font = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), translated, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        if text_w > region_w * 2:
+            continue
+
+        tx = x1_i + (region_w - text_w) // 2
+        ty = y1_i + (region_h - text_h) // 2
+        draw.text((tx, ty), translated, fill=(0, 0, 0), font=font)
+
+    buf = io.BytesIO()
+    pil_image.save(buf, format="PNG")
+    return buf.getvalue()

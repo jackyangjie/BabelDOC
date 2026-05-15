@@ -42,11 +42,9 @@ def write_docx(
 
         doc = DocxDocument_PythonDocx(tmpfd.name)
 
-        # Replace paragraph text
         _replace_paragraphs(doc, docx_doc)
-
-        # Replace table cell text
         _replace_table_cells(doc, docx_doc)
+        _replace_images(doc, docx_doc)
 
         doc.save(output_path)
         logger.info("Translated DOCX saved to: %s", output_path)
@@ -307,8 +305,47 @@ def write_dual_docx(
         _set_two_columns(doc)
         _inject_dual_paragraphs(doc, docx_doc)
         _replace_table_cells_keep_original(doc, docx_doc)
+        _replace_images(doc, docx_doc)
 
         doc.save(output_path)
         logger.info("Dual-language DOCX saved to: %s", output_path)
     finally:
         Path(tmpfd.name).unlink(missing_ok=True)
+
+
+def _replace_images(doc: DocxDocument_PythonDocx, docx_doc: DocxDocument) -> None:
+    """Replace image blobs with translated versions in the python-docx document.
+
+    Matches images by filename against the document's image parts and
+    updates the blob for any image with translated data.
+    """
+    if not docx_doc.images:
+        return
+
+    translated_map = {
+        img.filename: img.translated_data
+        for img in docx_doc.images
+        if img.translated_data is not None
+    }
+    if not translated_map:
+        return
+
+    replaced = 0
+    for rel in doc.part.rels.values():
+        part = rel.target_part
+        try:
+            partname = part.partname
+        except AttributeError:
+            continue
+        filename = partname.rsplit("/", 1)[-1]
+        if filename in translated_map:
+            try:
+                part._blob = translated_map[filename]
+                replaced += 1
+            except Exception:
+                logger.warning(
+                    "Failed to replace image blob for %s", filename, exc_info=True
+                )
+
+    if replaced:
+        logger.info("Replaced %d translated images in DOCX", replaced)

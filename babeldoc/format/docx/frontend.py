@@ -11,6 +11,7 @@ import logging
 from docx import Document as DocxDocument_PythonDocx
 
 from babeldoc.format.docx.il import DocxDocument
+from babeldoc.format.docx.il import DocxImage
 from babeldoc.format.docx.il import DocxParagraph
 from babeldoc.format.docx.il import DocxRun
 from babeldoc.format.docx.il import DocxTable
@@ -72,11 +73,7 @@ def _extract_text_from_binary_doc(filepath: str) -> list[str]:
         if 0x20 <= data[i] <= 0x7E and data[i + 1] == 0:
             chunk_bytes = bytearray()
             start = i
-            while (
-                i < len(data) - 1
-                and 0x20 <= data[i] <= 0x7E
-                and data[i + 1] == 0
-            ):
+            while i < len(data) - 1 and 0x20 <= data[i] <= 0x7E and data[i + 1] == 0:
                 chunk_bytes.append(data[i])
                 i += 2
             text = chunk_bytes.decode("ascii", errors="replace").strip()
@@ -84,11 +81,7 @@ def _extract_text_from_binary_doc(filepath: str) -> list[str]:
                 texts.append(text)
         elif data[i] == 0 and 0x20 <= data[i + 1] <= 0x7E:
             chunk_bytes = bytearray()
-            while (
-                i < len(data) - 1
-                and data[i] == 0
-                and 0x20 <= data[i + 1] <= 0x7E
-            ):
+            while i < len(data) - 1 and data[i] == 0 and 0x20 <= data[i + 1] <= 0x7E:
                 chunk_bytes.append(data[i + 1])
                 i += 2
             text = chunk_bytes.decode("ascii", errors="replace").strip()
@@ -179,9 +172,38 @@ def read_docx(filepath: str) -> DocxDocument:
             docx_table.rows.append(docx_row)
         result.tables.append(docx_table)
 
+    # Extract images
+    _extract_images(doc, result)
+
     logger.info(
-        "Parsed DOCX: %d paragraphs, %d tables",
+        "Parsed DOCX: %d paragraphs, %d tables, %d images",
         len(result.paragraphs),
         len(result.tables),
+        len(result.images),
     )
     return result
+
+
+def _extract_images(doc: DocxDocument_PythonDocx, result: DocxDocument) -> None:
+    """Extract image blobs from a python-docx document via inline shapes."""
+    seen: set[str] = set()
+    for shape in doc.inline_shapes:
+        try:
+            r_id = shape._inline.graphic.graphicData.pic.blipFill.blip.embed
+        except AttributeError:
+            continue
+        if r_id in seen:
+            continue
+        seen.add(r_id)
+        try:
+            image_part = doc.part.related_parts[r_id]
+            blob = image_part.blob
+            filename = image_part.partname.split("/")[-1]
+        except (KeyError, AttributeError):
+            continue
+        result.images.append(
+            DocxImage(
+                filename=filename,
+                original_data=blob,
+            ),
+        )

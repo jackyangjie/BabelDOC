@@ -57,9 +57,34 @@ class DocxTable:
 
 
 @dataclass(slots=True)
+class DocxImage:
+    """An image embedded in a DOCX document.
+
+    Tracks the image's position in the document structure and its
+    data for OCR-based text translation.
+    """
+
+    filename: str
+    """Name of the image file inside the .docx zip (e.g. 'word/media/image1.png')."""
+
+    paragraph_index: int | None = None
+    """Index of the paragraph that contains this image, if any."""
+
+    table_index: int | None = None
+    """Index of the table that contains this image, if any."""
+
+    original_data: bytes | None = field(default=None, repr=False)
+    """Raw image bytes extracted from the .docx."""
+
+    translated_data: bytes | None = field(default=None, repr=False)
+    """Image bytes after OCR and translation overlay."""
+
+
+@dataclass(slots=True)
 class DocxDocument:
     """Parsed representation of a DOCX file for translation purposes."""
 
     filepath: str
     paragraphs: list[DocxParagraph] = field(default_factory=list)
     tables: list[DocxTable] = field(default_factory=list)
+    images: list[DocxImage] = field(default_factory=list)
