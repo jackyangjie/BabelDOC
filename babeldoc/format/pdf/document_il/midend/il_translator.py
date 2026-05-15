@@ -580,7 +580,6 @@ class ILTranslator:
     ):
         if not paragraph.pdf_paragraph_composition:
             return
-
         # Skip pure numeric paragraphs
         if is_pure_numeric_paragraph(paragraph):
             return None

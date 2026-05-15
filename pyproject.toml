@@ -58,6 +58,7 @@ dependencies = [
     "docx2txt>=0.9",
     "textract>=2.0.0",
     "antiword>=0.1.0",
+    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 [project.optional-dependencies]

@@ -909,6 +909,13 @@ def _do_translate_single(
                 docs,
                 translation_config.get_working_file_path("table_parser.json"),
             )
+    # OCR extraction for pages with no extractable text (before ParagraphFinder
+    # so OCR-created paragraphs are counted in the "no paragraphs" check)
+    from babeldoc.format.pdf.document_il.midend.figure_ocr import FigureOCRExtractor
+
+    FigureOCRExtractor(translation_config).process(docs, doc_pdf2zh)
+    logger.debug("finish figure OCR")
+
     ParagraphFinder(translation_config).process(docs)
     logger.debug(f"finish paragraph finder from {temp_pdf_path}")
     if translation_config.debug:
@@ -916,6 +923,7 @@ def _do_translate_single(
             docs,
             translation_config.get_working_file_path("paragraph_finder.json"),
         )
+
     StylesAndFormulas(translation_config).process(docs)
     logger.debug(f"finish styles and formulas from {temp_pdf_path}")
     if translation_config.debug:
