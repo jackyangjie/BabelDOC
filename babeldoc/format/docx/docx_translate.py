@@ -97,7 +97,7 @@ def translate_docx(
 
     # Step 4: Write output(s) — mirror PDF dual/mono behaviour
     if not no_mono:
-        mono_filename = f"{stem}_translated.docx"
+        mono_filename = f"{stem}.mono.docx"
         mono_output_path = output_dir_path / mono_filename
         write_docx(docx_doc, str(mono_output_path))
         logger.info("Monolingual DOCX saved to: %s", mono_output_path)
