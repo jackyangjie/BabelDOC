@@ -33,3 +33,5 @@ memray*
 *.json
 .tmp
 yadt.toml*
+!assets/cache/
+!assets/cache/**

@@ -57,6 +57,10 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Pre-downloaded assets (models, fonts, cmap)
+# → /root/.cache/babeldoc/ so offline containers need no network for assets
+COPY assets/cache/ /root/.cache/babeldoc/
+
 # Executor workroot (runtime state)
 RUN mkdir -p /app/workroot
 VOLUME /app/workroot

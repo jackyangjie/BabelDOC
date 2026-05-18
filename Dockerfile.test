@@ -1,0 +1,74 @@
+# ============================================================
+# BabelDOC Docker Image (test runner with pre-downloaded assets)
+# ============================================================
+# Build:
+#   docker build -t babeldoc:test -f Dockerfile.test .
+#
+# Run (with test files bind-mounted):
+#   docker run --rm \
+#     -e OPENAI_API_KEY=sk-xxx \
+#     -v /path/to/testdata:/testdata \
+#     babeldoc:test
+#
+# Interactive:
+#   docker run --rm -it \
+#     -v /path/to/testdata:/testdata \
+#     --entrypoint bash babeldoc:test
+# ============================================================
+
+# --------------- builder stage ---------------
+FROM python:3.12-slim AS builder
+
+ENV UV_VERSION=0.6.14 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+RUN pip install --no-cache-dir uv==${UV_VERSION}
+
+WORKDIR /app
+COPY pyproject.toml README.md README_zh.md ./
+COPY babeldoc/ babeldoc/
+COPY docker/ docker/
+
+RUN uv sync --no-dev --frozen 2>/dev/null || uv sync --no-dev
+
+
+# --------------- runtime stage ---------------
+FROM python:3.12-slim
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libzstd1 \
+    fonts-noto-cjk \
+    fontconfig \
+    libreoffice-writer \
+    libreoffice-impress \
+    libreoffice-calc \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy babeldoc + venv
+COPY --from=builder /app /app
+
+# Pre-downloaded assets → no network needed at runtime
+COPY assets/cache/ /root/.cache/babeldoc/
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    OPENAI_MODEL="trs-m5" \
+    OPENAI_BASE_URL="http://192.168.5.82:23000/api/v1" \
+    OUTDIR="/testdata"
+
+# --------------- test data ---------------
+# Mount test files at runtime: -v /host/testdata:/testdata
+RUN mkdir -p /testdata
+
+# Test entrypoint
+COPY docker/test_all.sh /usr/local/bin/test_all.sh
+RUN chmod +x /usr/local/bin/test_all.sh
+
+WORKDIR /data
+ENTRYPOINT ["test_all.sh"]
